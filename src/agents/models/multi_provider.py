@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
 from openai import AsyncOpenAI
@@ -84,6 +85,14 @@ class MultiProvider(ModelProvider):
         openai_websocket_base_url: str | None = None,
         openai_prefix_mode: MultiProviderOpenAIPrefixMode = "alias",
         unknown_prefix_mode: MultiProviderUnknownPrefixMode = "error",
+        cli_execution_mode: str = "cli_autonomous",
+        cli_transport: str = "auto",
+        cli_cwd: str | None = None,
+        cli_env: Mapping[str, str] | None = None,
+        cli_timeout_seconds: float = 300.0,
+        cli_extra_args: Sequence[str] | None = None,
+        cli_executable_path: str | None = None,
+        cli_default_model_name: str | None = None,
     ) -> None:
         """Create a new OpenAI provider.
 
@@ -113,6 +122,14 @@ class MultiProvider(ModelProvider):
                 behavior and raises ``UserError``. ``"model_id"`` passes the full string through to
                 the OpenAI provider so OpenAI-compatible endpoints can receive namespaced model IDs
                 such as ``openrouter/openai/gpt-4o``.
+            cli_execution_mode: Default execution mode for the built-in ``cli/...`` provider.
+            cli_transport: Default transport for the built-in ``cli/...`` provider.
+            cli_cwd: Working directory for the built-in ``cli/...`` provider.
+            cli_env: Extra environment variables for the built-in ``cli/...`` provider.
+            cli_timeout_seconds: Timeout for built-in ``cli/...`` invocations.
+            cli_extra_args: Extra CLI arguments for the built-in ``cli/...`` provider.
+            cli_executable_path: Override executable path for the built-in ``cli/...`` provider.
+            cli_default_model_name: Default model name for the built-in ``cli/...`` provider.
         """
         self.provider_map = provider_map
         self.openai_provider = OpenAIProvider(
@@ -127,6 +144,16 @@ class MultiProvider(ModelProvider):
         )
         self._openai_prefix_mode = self._validate_openai_prefix_mode(openai_prefix_mode)
         self._unknown_prefix_mode = self._validate_unknown_prefix_mode(unknown_prefix_mode)
+        self._cli_provider_kwargs = {
+            "execution_mode": cli_execution_mode,
+            "transport": cli_transport,
+            "cwd": cli_cwd,
+            "env": cli_env,
+            "timeout_seconds": cli_timeout_seconds,
+            "extra_args": tuple(cli_extra_args or ()),
+            "executable_path": cli_executable_path,
+            "default_model_name": cli_default_model_name,
+        }
 
         self._fallback_providers: dict[str, ModelProvider] = {}
 
@@ -148,6 +175,10 @@ class MultiProvider(ModelProvider):
             from ..extensions.models.any_llm_provider import AnyLLMProvider
 
             return AnyLLMProvider()
+        elif prefix == "cli":
+            from ..extensions.models.cli_model import CLIProvider
+
+            return CLIProvider(**self._cli_provider_kwargs)
         else:
             raise UserError(f"Unknown prefix: {prefix}")
 
@@ -186,7 +217,7 @@ class MultiProvider(ModelProvider):
         if self.provider_map and (provider := self.provider_map.get_provider(prefix)):
             return provider, stripped_model_name
 
-        if prefix in {"litellm", "any-llm"}:
+        if prefix in {"litellm", "any-llm", "cli"}:
             return self._get_fallback_provider(prefix), stripped_model_name
 
         if prefix == "openai":

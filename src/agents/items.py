@@ -86,6 +86,13 @@ ToolSearchOutputRawItem: TypeAlias = ResponseToolSearchOutputItem | dict[str, An
 _MISSING_ATTR_SENTINEL = object()
 
 
+def _sanitize_provider_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload)
+    sanitized.pop("managed_by", None)
+    sanitized.pop("provider_data", None)
+    return sanitized
+
+
 @dataclass
 class RunItemBase(Generic[T], abc.ABC):
     agent: Agent[Any]
@@ -102,6 +109,11 @@ class RunItemBase(Generic[T], abc.ABC):
         repr=False,
         default=None,
     )
+    managed_by: Literal["sdk", "provider"] = field(default="sdk", kw_only=True)
+    """Whether this item was produced for SDK-side execution or recorded from the provider."""
+
+    provider_data: dict[str, Any] | None = field(default=None, kw_only=True)
+    """Optional provider-native metadata preserved on the item."""
 
     def __post_init__(self) -> None:
         # Store a weak reference so we can release the strong reference later if desired.
@@ -144,7 +156,7 @@ class RunItemBase(Generic[T], abc.ABC):
         """Converts this item into an input item suitable for passing to the model."""
         if isinstance(self.raw_item, dict):
             # We know that input items are dicts, so we can ignore the type error
-            return self.raw_item  # type: ignore
+            return cast(TResponseInputItem, _sanitize_provider_metadata(self.raw_item))
         elif isinstance(self.raw_item, BaseModel):
             # All output items are Pydantic models that can be converted to input items.
             return self.raw_item.model_dump(exclude_unset=True)  # type: ignore
@@ -195,7 +207,7 @@ def _tool_search_item_to_input_item(
 ) -> TResponseInputItem:
     """Strip output-only tool_search fields before replaying items back to the API."""
     if isinstance(raw_item, dict):
-        payload = dict(raw_item)
+        payload = _sanitize_provider_metadata(raw_item)
     elif isinstance(raw_item, BaseModel):
         payload = raw_item.model_dump(exclude_unset=True)
     else:
@@ -214,7 +226,7 @@ def _output_item_to_input_item(raw_item: Any) -> TResponseInputItem:
         return _tool_search_item_to_input_item(raw_item)
 
     if isinstance(raw_item, dict):
-        return cast(TResponseInputItem, dict(raw_item))
+        return cast(TResponseInputItem, _sanitize_provider_metadata(raw_item))
     if isinstance(raw_item, BaseModel):
         return cast(TResponseInputItem, raw_item.model_dump(exclude_unset=True))
 
@@ -222,7 +234,7 @@ def _output_item_to_input_item(raw_item: Any) -> TResponseInputItem:
 
 
 def _copy_tool_search_mapping(raw_item: Mapping[str, Any]) -> dict[str, Any]:
-    copied = dict(raw_item)
+    copied = _sanitize_provider_metadata(raw_item)
     copied_type = copied.get("type")
     if isinstance(copied_type, str):
         copied["type"] = copied_type
@@ -391,13 +403,12 @@ class ToolCallOutputItem(RunItemBase[Any]):
         """
 
         if isinstance(self.raw_item, dict):
-            payload = dict(self.raw_item)
+            payload = _sanitize_provider_metadata(self.raw_item)
             payload_type = payload.get("type")
             if payload_type == "shell_call_output":
                 payload = dict(payload)
                 payload.pop("status", None)
                 payload.pop("shell_output", None)
-                payload.pop("provider_data", None)
                 outputs = payload.get("output")
                 if isinstance(outputs, list):
                     for entry in outputs:
@@ -636,6 +647,12 @@ class ModelResponse:
 
     request_id: str | None = None
     """The transport request ID for this model call, if provided by the model SDK."""
+
+    provider_response_id: str | None = None
+    """Optional provider-native response/session identifier for non-OpenAI model runtimes."""
+
+    provider_session_id: str | None = None
+    """Optional provider-native thread/session identifier used for resume semantics."""
 
     def to_input_items(self) -> list[TResponseInputItem]:
         """Convert the output into a list of input items suitable for passing to the model."""

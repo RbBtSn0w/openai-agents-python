@@ -10,10 +10,13 @@ from openai.types.responses import (
     ResponseFunctionShellToolCallOutput,
     ResponseFunctionToolCall,
     ResponseOutputItem,
+    ResponseOutputMessage,
+    ResponseOutputText,
     ResponseToolSearchCall,
     ResponseToolSearchOutputItem,
 )
 from openai.types.responses.response_output_item import McpCall, McpListTools, McpListToolsTool
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem, Summary
 
 from agents import (
     Agent,
@@ -246,6 +249,107 @@ def test_process_model_response_preserves_shell_call_output() -> None:
     assert processed.shell_calls == []
 
 
+def test_process_model_response_preserves_provider_managed_local_shell_transcript() -> None:
+    provider_shell_call = {
+        "type": "local_shell_call",
+        "id": "ls_1",
+        "call_id": "call_local_shell_1",
+        "status": "completed",
+        "action": {
+            "type": "exec",
+            "command": ["sh", "-lc", "pwd"],
+            "env": {},
+            "working_directory": "/tmp/workspace",
+        },
+        "managed_by": "provider",
+        "provider_data": {"vendor": "codex"},
+    }
+    provider_shell_output = {
+        "type": "shell_call_output",
+        "id": "ls_out_1",
+        "call_id": "call_local_shell_1",
+        "status": "completed",
+        "output": [
+            {
+                "stdout": "/tmp/workspace\n",
+                "stderr": "",
+                "outcome": {"type": "exit", "exit_code": 0},
+                "created_by": "provider",
+            }
+        ],
+        "managed_by": "provider",
+        "provider_data": {"vendor": "codex"},
+        "created_by": "provider",
+    }
+    agent = Agent(name="provider-local-shell", model=FakeModel())
+
+    processed = run_loop.process_model_response(
+        agent=agent,
+        all_tools=[],
+        response=_response([provider_shell_call, provider_shell_output]),
+        output_schema=None,
+        handoffs=[],
+    )
+
+    assert len(processed.new_items) == 2
+    call_item = processed.new_items[0]
+    output_item = processed.new_items[1]
+    assert isinstance(call_item, ToolCallItem)
+    assert isinstance(output_item, ToolCallOutputItem)
+    assert call_item.managed_by == "provider"
+    assert output_item.managed_by == "provider"
+    assert processed.local_shell_calls == []
+    assert processed.shell_calls == []
+    assert processed.tools_used == ["local_shell", "shell"]
+
+    replay_call = call_item.to_input_item()
+    replay_output = output_item.to_input_item()
+    assert isinstance(replay_call, dict)
+    assert isinstance(replay_output, dict)
+    assert "managed_by" not in replay_call
+    assert "provider_data" not in replay_call
+    assert "managed_by" not in replay_output
+    assert "provider_data" not in replay_output
+    assert "created_by" not in replay_output
+
+
+def test_process_model_response_does_not_warn_for_message_or_reasoning_output(caplog) -> None:
+    agent = Agent(name="message-reasoning", model=FakeModel())
+    response = _response(
+        [
+            ResponseOutputMessage(
+                id="msg_1",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[ResponseOutputText(text="OK", type="output_text", annotations=[])],
+            ),
+            ResponseReasoningItem(
+                id="rs_1",
+                type="reasoning",
+                summary=[Summary(text="Plan", type="summary_text")],
+                status="completed",
+            ),
+        ]
+    )
+
+    with caplog.at_level("WARNING", logger="agents.run_internal.turn_resolution"):
+        processed = run_loop.process_model_response(
+            agent=agent,
+            all_tools=[],
+            response=response,
+            output_schema=None,
+            handoffs=[],
+        )
+
+    assert len(processed.new_items) == 2
+    assert not [
+        record
+        for record in caplog.records
+        if "Unexpected output type, ignoring" in record.getMessage()
+    ]
+
+
 def test_process_model_response_sanitizes_shell_call_output_model_object() -> None:
     shell_output = ResponseFunctionShellToolCallOutput(
         type="shell_call_output",
@@ -296,6 +400,36 @@ def test_process_model_response_sanitizes_shell_call_output_model_object() -> No
     assert isinstance(next_outputs[0], dict)
     assert "created_by" not in next_outputs[0]
     assert processed.tools_used == ["shell"]
+
+
+def test_process_model_response_keeps_provider_managed_function_transcript_without_sdk_tool(
+) -> None:
+    agent = Agent(name="provider-function", model=FakeModel())
+    provider_function_call = {
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_fc_1",
+        "name": "external_provider_tool",
+        "arguments": '{"x":1}',
+        "status": "completed",
+        "managed_by": "provider",
+        "provider_data": {"vendor": "copilot"},
+    }
+
+    processed = run_loop.process_model_response(
+        agent=agent,
+        all_tools=[],
+        response=_response([provider_function_call]),
+        output_schema=None,
+        handoffs=[],
+    )
+
+    assert len(processed.new_items) == 1
+    item = processed.new_items[0]
+    assert isinstance(item, ToolCallItem)
+    assert item.managed_by == "provider"
+    assert processed.functions == []
+    assert processed.tools_used == ["external_provider_tool"]
 
 
 def test_process_model_response_apply_patch_call_without_tool_raises() -> None:

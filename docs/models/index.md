@@ -13,6 +13,7 @@ Start with the simplest path that fits your setup:
 | --- | --- | --- |
 | Use OpenAI models only | Use the default OpenAI provider with the Responses model path | [OpenAI models](#openai-models) |
 | Use OpenAI Responses API over websocket transport | Keep the Responses model path and enable websocket transport | [Responses WebSocket transport](#responses-websocket-transport) |
+| Use a locally installed CLI runtime such as Codex, Gemini, or Copilot | Route through the built-in CLI provider and reuse the CLI's local login state | [Local CLI runtimes](#local-cli-runtimes) |
 | Use one non-OpenAI provider | Start with the built-in provider integration points | [Non-OpenAI models](#non-openai-models) |
 | Mix models or providers across agents | Select providers per run or per agent and review feature differences | [Mixing models in one workflow](#mixing-models-in-one-workflow) and [Mixing models across providers](#mixing-models-across-providers) |
 | Tune advanced OpenAI Responses request settings | Use `ModelSettings` on the OpenAI Responses path | [Advanced OpenAI Responses settings](#advanced-openai-responses-settings) |
@@ -181,6 +182,89 @@ If you use a custom OpenAI-compatible endpoint or proxy, websocket transport als
 ## Non-OpenAI models
 
 If you need a non-OpenAI provider, start with the SDK's built-in provider integration points. In many setups, this is enough without adding a third-party adapter. Examples for each pattern live in [examples/model_providers](https://github.com/openai/openai-agents-python/tree/main/examples/model_providers/).
+
+### Local CLI runtimes
+
+The SDK can also route model calls through a locally installed agentic CLI runtime. This is useful
+when you want to reuse a CLI's local login state instead of managing a separate API key in the SDK.
+
+Currently supported vendors are:
+
+-   `cli/codex`
+-   `cli/gemini[:MODEL]`
+-   `cli/copilot[:MODEL]`
+
+The simplest path is to use a `cli/...` model string with the default `MultiProvider`:
+
+```python
+from agents import Agent
+
+agent = Agent(
+    name="Assistant",
+    instructions="Be concise.",
+    model="cli/codex",
+)
+```
+
+If you want a run-level default, use [`CLIProvider`][agents.CLIProvider]:
+
+```python
+from agents import Agent, CLIProvider, RunConfig, Runner
+
+provider = CLIProvider(
+    default_model_name="gemini:gemini-2.5-pro",
+    execution_mode="sdk_controlled",
+)
+
+agent = Agent(name="Assistant", instructions="Use tools when helpful.")
+result = await Runner.run(
+    agent,
+    "Summarize this repository.",
+    run_config=RunConfig(model_provider=provider),
+)
+```
+
+Two execution modes are available:
+
+-   `cli_autonomous`: the CLI uses its own native agent runtime. The SDK records provider-managed
+    transcript items and avoids re-executing provider-native tool calls.
+-   `sdk_controlled`: the SDK provides tool and handoff surfaces, and the CLI responds through a
+    JSON envelope that the SDK converts back into normal tool calls.
+
+CLI transports are configurable through `CLIProvider(..., transport=...)`,
+`CLIModelConfig(transport=...)`, `MultiProvider(cli_transport=...)` for `cli/...` model strings,
+or per call via `ModelSettings(extra_args={"cli_transport": ...})`. The public transport values
+are:
+
+-   `auto`: keep the vendor-specific default bridge.
+-   `acp`: use Agent Client Protocol over stdio when the vendor supports it.
+-   `json`: use a single JSON response bridge.
+-   `jsonl`: use newline-delimited JSON events.
+-   `stream_json`: use Gemini CLI's `stream-json` event stream.
+
+In `cli_autonomous` mode, `codex`, `gemini`, and `copilot` expose native streamed response events
+through [`Runner.run_streamed()`][agents.run.Runner.run_streamed]. The same native transcript
+normalization also feeds the non-streamed [`Runner.run()`][agents.run.Runner.run] path for the
+autonomous Codex, Gemini, and Copilot bridges, so provider-managed tool transcripts are preserved
+there too.
+The current bridges normalize the most stable public event surfaces first: `codex` and `copilot`
+include richer native transcript items today, while `gemini` currently normalizes `stream-json`
+assistant messages, tool activity, and usage.
+
+`acp` is currently supported for `gemini` and `copilot` in `cli_autonomous` mode. The SDK keeps
+the existing vendor defaults under `auto`, so enabling ACP is an explicit transport choice rather
+than a silent behavior change. In practice, `copilot --acp` is the most reliable live bridge today;
+some `gemini --acp` environments may never answer the initial handshake. When that happens, the SDK
+raises a timeout instead of silently falling back, and `stream_json` remains the safer Gemini
+transport.
+
+You can override CLI runtime settings per call via `ModelSettings(extra_args=...)`. Supported keys
+are either nested under `extra_args["cli"]` or passed as top-level aliases such as
+`cli_execution_mode`, `cli_transport`, `cli_model_name`, `cli_timeout_seconds`,
+`cli_extra_args`, `cli_env`, and `cli_cwd`.
+
+See [`examples/model_providers/cli_provider.py`](https://github.com/openai/openai-agents-python/tree/main/examples/model_providers/cli_provider.py)
+for a runnable example.
 
 ### Ways to integrate non-OpenAI providers
 

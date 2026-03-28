@@ -1318,8 +1318,37 @@ def process_model_response(
             "id": get_mapping_or_attr(raw_item, "id"),
         }
 
+    def _get_managed_by(raw_item: Any) -> Literal["sdk", "provider"]:
+        if isinstance(raw_item, Mapping) and raw_item.get("managed_by") == "provider":
+            return "provider"
+        return "sdk"
+
+    def _get_provider_data(raw_item: Any) -> dict[str, Any] | None:
+        if not isinstance(raw_item, Mapping):
+            return None
+        provider_data = raw_item.get("provider_data")
+        if isinstance(provider_data, Mapping):
+            return dict(provider_data)
+        return None
+
+    def _coerce_function_tool_call(raw_item: Any) -> ResponseFunctionToolCall | None:
+        if isinstance(raw_item, ResponseFunctionToolCall):
+            return raw_item
+        if not isinstance(raw_item, Mapping):
+            return None
+        payload = dict(raw_item)
+        payload.pop("managed_by", None)
+        payload.pop("provider_data", None)
+        try:
+            return ResponseFunctionToolCall(**payload)
+        except Exception:
+            return None
+
     for output in response.output:
         output_type = get_mapping_or_attr(output, "type")
+        managed_by = _get_managed_by(output)
+        provider_data = _get_provider_data(output)
+        is_provider_managed = managed_by == "provider"
         logger.debug(
             "Processing output item type=%s class=%s",
             output_type,
@@ -1341,7 +1370,17 @@ def process_model_response(
                     "created_by": get_mapping_or_attr(output, "created_by"),
                 }
             shell_call_raw.pop("created_by", None)
-            items.append(ToolCallItem(raw_item=cast(Any, shell_call_raw), agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=cast(Any, shell_call_raw),
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                tools_used.append("shell")
+                continue
             if not shell_tool:
                 tools_used.append("shell")
                 _error_tracing.attach_error_to_current_span(
@@ -1391,6 +1430,8 @@ def process_model_response(
                     raw_item=cast(Any, shell_output_raw),
                     output=shell_output_raw.get("output"),
                     agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
                 )
             )
             continue
@@ -1409,7 +1450,17 @@ def process_model_response(
                     "created_by": get_mapping_or_attr(output, "created_by"),
                 }
             apply_patch_call_raw.pop("created_by", None)
-            items.append(ToolCallItem(raw_item=cast(Any, apply_patch_call_raw), agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=cast(Any, apply_patch_call_raw),
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                tools_used.append("apply_patch")
+                continue
             if apply_patch_tool:
                 tools_used.append(apply_patch_tool.name)
                 call_identifier = get_mapping_or_attr(apply_patch_call_raw, "call_id")
@@ -1466,17 +1517,59 @@ def process_model_response(
             tools_used.append("tool_search")
             continue
         if isinstance(output, ResponseOutputMessage):
-            items.append(MessageOutputItem(raw_item=output, agent=agent))
+            items.append(
+                MessageOutputItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            continue
         elif isinstance(output, ResponseFileSearchToolCall):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             tools_used.append("file_search")
+            continue
         elif isinstance(output, ResponseFunctionWebSearch):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             tools_used.append("web_search")
+            continue
         elif isinstance(output, ResponseReasoningItem):
-            items.append(ReasoningItem(raw_item=output, agent=agent))
+            items.append(
+                ReasoningItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            continue
         elif isinstance(output, ResponseComputerToolCall):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                tools_used.append("computer")
+                continue
             if not computer_tool:
                 tools_used.append("computer")
                 _error_tracing.attach_error_to_current_span(
@@ -1490,8 +1583,18 @@ def process_model_response(
             computer_actions.append(
                 ToolRunComputerAction(tool_call=output, computer_tool=computer_tool)
             )
+            continue
         elif isinstance(output, McpApprovalRequest):
-            items.append(MCPApprovalRequestItem(raw_item=output, agent=agent))
+            items.append(
+                MCPApprovalRequestItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                continue
             if output.server_label not in hosted_mcp_server_map:
                 _error_tracing.attach_error_to_current_span(
                     SpanError(
@@ -1513,8 +1616,17 @@ def process_model_response(
                     "surfaced as interruptions for the caller to handle.",
                     output.server_label,
                 )
+            continue
         elif isinstance(output, McpListTools):
-            items.append(MCPListToolsItem(raw_item=output, agent=agent))
+            items.append(
+                MCPListToolsItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            continue
         elif isinstance(output, McpCall):
             metadata = hosted_mcp_tool_metadata.get((output.server_label, output.name))
             items.append(
@@ -1523,17 +1635,75 @@ def process_model_response(
                     agent=agent,
                     description=metadata.description if metadata is not None else None,
                     title=metadata.title if metadata is not None else None,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
                 )
             )
             tools_used.append("mcp")
+            continue
         elif isinstance(output, ImageGenerationCall):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             tools_used.append("image_generation")
+            continue
         elif isinstance(output, ResponseCodeInterpreterToolCall):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             tools_used.append("code_interpreter")
+            continue
+        elif output_type == "local_shell_call" and isinstance(output, Mapping):
+            items.append(
+                ToolCallItem(
+                    raw_item=cast(Any, dict(output)),
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            tools_used.append("local_shell")
+            if is_provider_managed:
+                continue
+            if local_shell_tool:
+                local_shell_calls.append(
+                    ToolRunLocalShellCall(
+                        tool_call=cast(Any, output),
+                        local_shell_tool=local_shell_tool,
+                    )
+                )
+            elif shell_tool:
+                shell_calls.append(ToolRunShellCall(tool_call=cast(Any, output), shell_tool=shell_tool))
+            else:
+                _error_tracing.attach_error_to_current_span(
+                    SpanError(message="Local shell tool not found", data={})
+                )
+                raise ModelBehaviorError(
+                    "Model produced local shell call without a local shell tool."
+                )
+            continue
         elif isinstance(output, LocalShellCall):
-            items.append(ToolCallItem(raw_item=output, agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                tools_used.append("local_shell")
+                continue
             if local_shell_tool:
                 tools_used.append("local_shell")
                 local_shell_calls.append(
@@ -1553,6 +1723,7 @@ def process_model_response(
                 raise ModelBehaviorError(
                     "Model produced local shell call without a local shell tool."
                 )
+            continue
         elif isinstance(output, ResponseCustomToolCall) and is_apply_patch_name(
             output.name, apply_patch_tool
         ):
@@ -1562,7 +1733,14 @@ def process_model_response(
                 "call_id": output.call_id,
                 "operation": parsed_operation,
             }
-            items.append(ToolCallItem(raw_item=cast(Any, pseudo_call), agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=cast(Any, pseudo_call),
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             if apply_patch_tool:
                 tools_used.append(apply_patch_tool.name)
                 apply_patch_calls.append(
@@ -1582,6 +1760,7 @@ def process_model_response(
                 raise ModelBehaviorError(
                     "Model produced apply_patch call without an apply_patch tool."
                 )
+            continue
         elif (
             isinstance(output, ResponseFunctionToolCall)
             and is_apply_patch_name(output.name, apply_patch_tool)
@@ -1593,7 +1772,14 @@ def process_model_response(
                 "call_id": output.call_id,
                 "operation": parsed_operation,
             }
-            items.append(ToolCallItem(raw_item=cast(Any, pseudo_call), agent=agent))
+            items.append(
+                ToolCallItem(
+                    raw_item=cast(Any, pseudo_call),
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
             if apply_patch_tool:
                 tools_used.append(apply_patch_tool.name)
                 apply_patch_calls.append(
@@ -1613,17 +1799,31 @@ def process_model_response(
             continue
 
         elif not isinstance(output, ResponseFunctionToolCall):
-            logger.warning("Unexpected output type, ignoring: %s", type(output))
-            continue
+            coerced_output = _coerce_function_tool_call(output)
+            if coerced_output is not None:
+                output = coerced_output
+            else:
+                logger.warning("Unexpected output type, ignoring: %s", type(output))
+                continue
 
         if not isinstance(output, ResponseFunctionToolCall):
+            logger.warning("Unexpected output type, ignoring: %s", type(output))
             continue
 
         tools_used.append(get_tool_call_trace_name(output) or output.name)
         qualified_output_name = get_tool_call_qualified_name(output)
 
         if qualified_output_name == output.name and output.name in handoff_map:
-            items.append(HandoffCallItem(raw_item=output, agent=agent))
+            items.append(
+                HandoffCallItem(
+                    raw_item=output,
+                    agent=agent,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
+                )
+            )
+            if is_provider_managed:
+                continue
             handoff = ToolRunHandoff(
                 tool_call=output,
                 handoff=handoff_map[output.name],
@@ -1634,11 +1834,28 @@ def process_model_response(
             func_tool = function_map.get(lookup_key) if lookup_key is not None else None
             if func_tool is None:
                 if output_schema is not None and output.name == "json_tool_call":
-                    items.append(ToolCallItem(raw_item=output, agent=agent))
+                    items.append(
+                        ToolCallItem(
+                            raw_item=output,
+                            agent=agent,
+                            managed_by=managed_by,
+                            provider_data=provider_data,
+                        )
+                    )
                     functions.append(
                         ToolRunFunction(
                             tool_call=output,
                             function_tool=build_litellm_json_tool_call(output),
+                        )
+                    )
+                    continue
+                if is_provider_managed:
+                    items.append(
+                        ToolCallItem(
+                            raw_item=output,
+                            agent=agent,
+                            managed_by=managed_by,
+                            provider_data=provider_data,
                         )
                     )
                     continue
@@ -1659,8 +1876,12 @@ def process_model_response(
                     agent=agent,
                     description=func_tool.description,
                     title=func_tool._mcp_title,
+                    managed_by=managed_by,
+                    provider_data=provider_data,
                 )
             )
+            if is_provider_managed:
+                continue
             functions.append(
                 ToolRunFunction(
                     tool_call=output,

@@ -4,15 +4,21 @@ import pytest
 
 from agents import (
     Agent,
+    CLIProvider,
     MultiProvider,
     OpenAIResponsesModel,
     OpenAIResponsesWSModel,
     RunConfig,
     UserError,
 )
-from agents.extensions.models.litellm_model import LitellmModel
+from agents.extensions.models import CLIModel
 from agents.models.multi_provider import MultiProviderMap
 from agents.run_internal.run_loop import get_model
+
+try:
+    from agents.extensions.models.litellm_model import LitellmModel
+except ImportError:
+    LitellmModel = None
 
 
 def test_no_prefix_is_openai():
@@ -28,6 +34,8 @@ def test_openai_prefix_is_openai():
 
 
 def test_litellm_prefix_is_litellm():
+    if LitellmModel is None:
+        pytest.skip("litellm optional dependency is not installed")
     agent = Agent(model="litellm/foo/bar", instructions="", name="test")
     model = get_model(agent, RunConfig())
     assert isinstance(model, LitellmModel)
@@ -55,6 +63,41 @@ def test_any_llm_prefix_uses_any_llm_provider(monkeypatch):
     model = get_model(agent, RunConfig())
     assert isinstance(model, FakeAnyLLMModel)
     assert captured_model["value"] == "openrouter/openai/gpt-5.4-mini"
+
+
+def test_cli_prefix_uses_cli_provider() -> None:
+    agent = Agent(model="cli/codex", instructions="", name="test")
+    model = get_model(agent, RunConfig())
+    assert isinstance(model, CLIModel)
+    assert model.config.vendor == "codex"
+
+
+def test_cli_provider_accepts_cli_colon_prefixed_model_name() -> None:
+    provider = CLIProvider()
+    model = provider.get_model("cli:gemini:gemini-2.5-pro")
+    assert isinstance(model, CLIModel)
+    assert model.config.vendor == "gemini"
+    assert model.config.model_name == "gemini-2.5-pro"
+
+
+def test_multi_provider_passes_cli_runtime_configuration() -> None:
+    provider = MultiProvider(
+        cli_transport="acp",
+        cli_timeout_seconds=42,
+        cli_cwd="/tmp/cli-runtime",
+        cli_env={"CLI_ENV_TEST": "yes"},
+        cli_extra_args=["--debug"],
+        cli_default_model_name="copilot:gpt-4.1",
+    )
+
+    model = provider.get_model("cli/copilot")
+    assert isinstance(model, CLIModel)
+    assert model.config.vendor == "copilot"
+    assert model.config.transport == "acp"
+    assert model.config.timeout_seconds == 42
+    assert model.config.cwd == "/tmp/cli-runtime"
+    assert model.config.env == {"CLI_ENV_TEST": "yes"}
+    assert model.config.extra_args == ("--debug",)
 
 
 def test_no_prefix_can_use_openai_responses_websocket():

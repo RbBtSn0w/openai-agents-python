@@ -83,6 +83,15 @@ from .models.multi_provider import MultiProvider
 from .models.openai_chatcompletions import OpenAIChatCompletionsModel
 from .models.openai_provider import OpenAIProvider
 from .models.openai_responses import OpenAIResponsesModel, OpenAIResponsesWSModel
+from .extensions.models import (
+    CLIExecutionMode,
+    CLIModel,
+    CLIProvider,
+    CLITransport,
+    CodexCLIProvider,
+    CopilotCLIProvider,
+    GeminiCLIProvider,
+)
 from .prompts import DynamicPromptFunction, GenerateDynamicPromptData, Prompt
 from .repl import run_demo_loop
 from .responses_websocket_session import ResponsesWebSocketSession, responses_websocket_session
@@ -309,6 +318,13 @@ __all__ = [
     "OpenAIProvider",
     "OpenAIResponsesModel",
     "OpenAIResponsesWSModel",
+    "CLIExecutionMode",
+    "CLITransport",
+    "CLIModel",
+    "CLIProvider",
+    "CodexCLIProvider",
+    "GeminiCLIProvider",
+    "CopilotCLIProvider",
     "AgentOutputSchema",
     "AgentOutputSchemaBase",
     "Computer",
