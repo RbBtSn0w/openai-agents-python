@@ -110,10 +110,40 @@ class FakeExec:
             yield payload
 
 
+class FakeAClosingGenerator:
+    def __init__(self, error_message: str | None = None) -> None:
+        self.error_message = error_message
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+        if self.error_message is not None:
+            raise RuntimeError(self.error_message)
+
+
 def test_output_schema_file_none_schema() -> None:
     result = create_output_schema_file(None)
     assert result.schema_path is None
     result.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_aclosing_swallows_known_generator_exit_runtime_error() -> None:
+    generator = FakeAClosingGenerator("generator didn't stop after athrow()")
+
+    async with thread_module._aclosing(cast(Any, generator)) as stream:
+        assert stream is generator
+
+    assert generator.closed is True
+
+
+@pytest.mark.asyncio
+async def test_aclosing_reraises_unexpected_runtime_error() -> None:
+    generator = FakeAClosingGenerator("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with thread_module._aclosing(cast(Any, generator)):
+            pass
 
 
 def test_output_schema_file_rejects_non_object() -> None:

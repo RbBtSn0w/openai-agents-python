@@ -34,7 +34,11 @@ async def _aclosing(
     try:
         yield generator
     finally:
-        await generator.aclose()
+        try:
+            await generator.aclose()
+        except RuntimeError as exc:
+            if str(exc) != "generator didn't stop after athrow()":
+                raise
 
 
 class TextInput(TypedDict):

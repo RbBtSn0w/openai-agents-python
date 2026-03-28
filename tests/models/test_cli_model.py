@@ -33,7 +33,11 @@ from agents.extensions.experimental.codex import (
     WebSearchItem,
 )
 from agents.extensions.models import CLIModel
-from agents.extensions.models.cli_model import CLIModelConfig, _build_response_obj
+from agents.extensions.models.cli_model import (
+    CLIModelConfig,
+    _build_response_obj,
+    _parse_controlled_envelope,
+)
 from agents.model_settings import ModelSettings
 from agents.models.interface import ModelTracing
 from agents.usage import Usage
@@ -150,6 +154,55 @@ async def test_gemini_cli_model_sdk_controlled_returns_function_calls(monkeypatc
     assert response.output[1].name == "lookup_customer"
     assert response.output[1].arguments == '{"customer_id":"cust_42"}'
     assert isinstance(response.output[2], ResponseOutputMessage)
+
+
+def test_parse_controlled_envelope_accepts_fenced_json_with_trailing_text() -> None:
+    envelope = _parse_controlled_envelope(
+        """```json
+{
+  "assistant_message": null,
+  "tool_calls": [],
+  "reasoning_summary": "Need current customer data."
+}
+```
+
+Final answer here.
+"""
+    )
+
+    assert envelope.reasoning_summary == "Need current customer data."
+    assert envelope.assistant_message == "Final answer here."
+
+
+@pytest.mark.asyncio
+async def test_gemini_cli_model_sdk_controlled_uses_trailing_text_as_assistant_message(
+    monkeypatch,
+) -> None:
+    async def fake_run_json_command(*, command, cwd, env, timeout_seconds):
+        del command, cwd, env, timeout_seconds
+        return {
+            "session_id": "gemini-session-2b",
+            "response": """```json
+{
+  "assistant_message": null,
+  "tool_calls": [],
+  "reasoning_summary": "Need current customer data."
+}
+```
+
+Final assistant output.
+""",
+        }
+
+    monkeypatch.setattr(cli_model_module, "_run_json_command", fake_run_json_command)
+    monkeypatch.setattr(CLIModel, "_resolve_executable", lambda self, config, name: f"/bin/{name}")
+
+    model = CLIModel(CLIModelConfig(vendor="gemini", execution_mode="sdk_controlled"))
+    response = await _get_response(model)
+
+    assert isinstance(response.output[0], ResponseReasoningItem)
+    assert isinstance(response.output[1], ResponseOutputMessage)
+    assert response.output[1].content[0].text == "Final assistant output."
 
 
 @pytest.mark.asyncio

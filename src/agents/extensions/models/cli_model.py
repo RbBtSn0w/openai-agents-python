@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -1481,18 +1482,52 @@ def _strip_code_fences(text: str) -> str:
     return cleaned
 
 
+def _extract_controlled_envelope_payload(text: str) -> tuple[dict[str, Any], str]:
+    cleaned = require_non_empty_str(text, "controlled CLI output").strip()
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[str, str]] = []
+
+    for match in re.finditer(r"```(?:json)?\s*(.*?)```", cleaned, flags=re.DOTALL | re.IGNORECASE):
+        block = match.group(1).strip()
+        suffix = cleaned[match.end() :].strip()
+        candidates.append((block, suffix))
+
+    candidates.append((_strip_code_fences(cleaned), ""))
+
+    for candidate, suffix in candidates:
+        if not candidate:
+            continue
+
+        for start_char in ("{", "["):
+            start_index = candidate.find(start_char)
+            if start_index < 0:
+                continue
+            try:
+                payload, end_index = decoder.raw_decode(candidate[start_index:])
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(payload, dict):
+                continue
+
+            trailing = candidate[start_index + end_index :].strip()
+            extra_text = "\n\n".join(part for part in (trailing, suffix) if part).strip()
+            return payload, extra_text
+
+    raise ModelBehaviorError(f"CLI output is not valid JSON envelope: {cleaned}")
+
+
 def _parse_controlled_envelope(text: str) -> _ControlledEnvelope:
-    cleaned = _strip_code_fences(require_non_empty_str(text, "controlled CLI output"))
+    payload, extra_text = _extract_controlled_envelope_payload(text)
     try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise ModelBehaviorError(f"CLI output is not valid JSON envelope: {cleaned}") from exc
-    try:
-        return _ControlledEnvelope.model_validate(payload)
+        envelope = _ControlledEnvelope.model_validate(payload)
     except ValidationError as exc:
         raise ModelBehaviorError(
             f"CLI output does not match controlled envelope schema: {payload}"
         ) from exc
+    if extra_text and not envelope.assistant_message:
+        return envelope.model_copy(update={"assistant_message": extra_text})
+    return envelope
 
 
 def _controlled_envelope_to_outputs(
