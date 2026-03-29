@@ -9,12 +9,14 @@ from agents import Agent, CLIProvider, RunConfig, Runner, function_tool, set_tra
 
 Examples:
 uv run examples/model_providers/cli_provider.py --model codex
+uv run examples/model_providers/cli_provider.py --model codex:gpt-5.4/high --transport acp
 uv run examples/model_providers/cli_provider.py --model gemini:gemini-2.5-pro --execution-mode sdk_controlled
 uv run examples/model_providers/cli_provider.py --model copilot:gpt-4.1 --execution-mode cli_autonomous
 uv run examples/model_providers/cli_provider.py --model gemini:gemini-2.5-flash --transport acp
 
 Requirements:
 - A supported local CLI must be installed: codex, gemini, or copilot
+- For `--model codex`, install a compatible Codex ACP adapter
 - That CLI must already be authenticated locally
 """
 

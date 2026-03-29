@@ -89,7 +89,7 @@ search:
     简单的深度研究克隆，展示了复杂的多智能体研究工作流。
 
 -   **[tools](https://github.com/openai/openai-agents-python/tree/main/examples/tools):**
-    了解如何实现由OpenAI托管的工具和实验性 Codex 工具能力，例如：
+    了解如何实现由 OpenAI 托管的工具和本地运行时工具能力，例如：
 
     -   网络检索与带过滤器的网络检索
     -   文件检索
@@ -100,8 +100,6 @@ search:
     -   带命名空间与延迟工具的工具搜索（`examples/tools/tool_search.py`）
     -   计算机操作
     -   图像生成
-    -   实验性 Codex 工具工作流（`examples/tools/codex.py`）
-    -   实验性 Codex 同线程工作流（`examples/tools/codex_same_thread.py`）
 
 -   **[voice](https://github.com/openai/openai-agents-python/tree/main/examples/voice):**
     查看语音智能体示例，使用我们的 TTS 和 STT 模型，包括流式语音示例。

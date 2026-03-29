@@ -3,12 +3,10 @@ from __future__ import annotations
 from openai.types.responses import ResponseCompletedEvent, ResponseOutputMessage
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 
-from agents.extensions.experimental.codex import CommandExecutionItem
 from agents.extensions.models.cli_model import _CLIStreamingSession
 from agents.extensions.models.cli_protocol_adapter import (
     CopilotStreamAdapter,
     GeminiStreamAdapter,
-    codex_provider_outputs_for_item,
 )
 from agents.usage import Usage
 
@@ -110,21 +108,3 @@ def test_gemini_stream_adapter_segments_messages_around_tool_use() -> None:
     assert completed.response.usage.input_tokens == 6
     assert completed.response.usage.output_tokens == 2
     assert completed.response.usage.total_tokens == 8
-
-
-def test_codex_provider_outputs_map_command_execution() -> None:
-    outputs = codex_provider_outputs_for_item(
-        CommandExecutionItem(
-            id="cmd-1",
-            command="pwd",
-            aggregated_output="/tmp/workspace\n",
-            exit_code=0,
-            status="completed",
-        ),
-        cwd="/tmp/workspace",
-    )
-
-    assert outputs[0]["type"] == "local_shell_call"
-    assert outputs[0]["action"]["command"] == ["sh", "-lc", "pwd"]
-    assert outputs[1]["type"] == "shell_call_output"
-    assert outputs[1]["output"][0]["stdout"] == "/tmp/workspace\n"

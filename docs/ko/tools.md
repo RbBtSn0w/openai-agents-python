@@ -772,64 +772,10 @@ asyncio.run(main())
 
 ## 실험적 기능: Codex 도구
 
-`codex_tool`은 Codex CLI를 래핑하여 에이전트가 도구 호출 중 워크스페이스 범위 작업(shell, 파일 편집, MCP 도구)을 실행할 수 있게 합니다. 이 표면은 실험적이며 변경될 수 있습니다.
+이 fork에서는 기존 `codex_tool` 및 내장 Codex thread runtime이 제거되었습니다.
 
-현재 실행을 벗어나지 않고 메인 에이전트가 제한된 워크스페이스 작업을 Codex에 위임하길 원할 때 사용하세요. 기본 도구 이름은 `codex`입니다. 사용자 지정 이름을 설정하는 경우 `codex`이거나 `codex_`로 시작해야 합니다. 에이전트에 여러 Codex 도구를 포함할 때는 각각 고유한 이름을 사용해야 합니다.
+Codex는 CLI model provider로 사용하세요:
 
-```python
-from agents import Agent
-from agents.extensions.experimental.codex import ThreadOptions, TurnOptions, codex_tool
-
-agent = Agent(
-    name="Codex Agent",
-    instructions="Use the codex tool to inspect the workspace and answer the question.",
-    tools=[
-        codex_tool(
-            sandbox_mode="workspace-write",
-            working_directory="/path/to/repo",
-            default_thread_options=ThreadOptions(
-                model="gpt-5.4",
-                model_reasoning_effort="low",
-                network_access_enabled=True,
-                web_search_mode="disabled",
-                approval_policy="never",
-            ),
-            default_turn_options=TurnOptions(
-                idle_timeout_seconds=60,
-            ),
-            persist_session=True,
-        )
-    ],
-)
-```
-
-다음 옵션 그룹으로 시작하세요:
-
--   실행 표면: `sandbox_mode`와 `working_directory`는 Codex가 작동할 위치를 정의합니다. 함께 사용하고, 작업 디렉터리가 Git 저장소 내부가 아니면 `skip_git_repo_check=True`를 설정하세요
--   스레드 기본값: `default_thread_options=ThreadOptions(...)`는 모델, reasoning effort, 승인 정책, 추가 디렉터리, 네트워크 액세스, 웹 검색 모드를 구성합니다. 레거시 `web_search_enabled`보다 `web_search_mode`를 선호하세요
--   턴 기본값: `default_turn_options=TurnOptions(...)`는 `idle_timeout_seconds` 및 선택적 취소 `signal` 같은 턴별 동작을 구성합니다
--   도구 I/O: 도구 호출에는 `{ "type": "text", "text": ... }` 또는 `{ "type": "local_image", "path": ... }`가 포함된 `inputs` 항목이 최소 하나 필요합니다. `output_schema`를 사용하면 구조화된 Codex 응답을 요구할 수 있습니다
-
-스레드 재사용과 영속성은 별도의 제어입니다:
-
--   `persist_session=True`는 동일 도구 인스턴스의 반복 호출에서 하나의 Codex 스레드를 재사용합니다
--   `use_run_context_thread_id=True`는 동일한 가변 컨텍스트 객체를 공유하는 실행 간에 run context에 스레드 ID를 저장하고 재사용합니다
--   스레드 ID 우선순위는 호출별 `thread_id`, 그다음 run-context 스레드 ID(활성화된 경우), 그다음 구성된 `thread_id` 옵션입니다
--   기본 run-context 키는 `name="codex"`일 때 `codex_thread_id`, `name="codex_<suffix>"`일 때 `codex_thread_id_<suffix>`입니다. `run_context_thread_id_key`로 재정의하세요
-
-런타임 구성:
-
--   인증: `CODEX_API_KEY`(권장) 또는 `OPENAI_API_KEY`를 설정하거나, `codex_options={"api_key": "..."}`를 전달하세요
--   런타임: `codex_options.base_url`은 CLI base URL을 재정의합니다
--   바이너리 확인: CLI 경로를 고정하려면 `codex_options.codex_path_override`(또는 `CODEX_PATH`)를 설정하세요. 그렇지 않으면 SDK는 `PATH`에서 `codex`를 확인한 뒤 번들된 vendor 바이너리로 폴백합니다
--   환경: `codex_options.env`는 서브프로세스 환경을 완전히 제어합니다. 제공되면 서브프로세스는 `os.environ`을 상속하지 않습니다
--   스트림 제한: `codex_options.codex_subprocess_stream_limit_bytes`(또는 `OPENAI_AGENTS_CODEX_SUBPROCESS_STREAM_LIMIT_BYTES`)는 stdout/stderr 리더 제한을 제어합니다. 유효 범위는 `65536`~`67108864`이며 기본값은 `8388608`입니다
--   스트리밍: `on_stream`은 스레드/턴 라이프사이클 이벤트와 항목 이벤트(`reasoning`, `command_execution`, `mcp_tool_call`, `file_change`, `web_search`, `todo_list`, `error` 항목 업데이트)를 수신합니다
--   출력: 결과에는 `response`, `usage`, `thread_id`가 포함되며, usage는 `RunContextWrapper.usage`에 추가됩니다
-
-참고 자료:
-
--   [Codex 도구 API 레퍼런스](ref/extensions/experimental/codex/codex_tool.md)
--   [ThreadOptions 레퍼런스](ref/extensions/experimental/codex/thread_options.md)
--   [TurnOptions 레퍼런스](ref/extensions/experimental/codex/turn_options.md)
--   전체 실행 가능 샘플은 `examples/tools/codex.py` 및 `examples/tools/codex_same_thread.py`를 참조하세요
+-   `model="cli/codex"`
+-   `execution_mode="cli_autonomous"`
+-   `transport="acp"`

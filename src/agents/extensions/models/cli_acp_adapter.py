@@ -32,6 +32,7 @@ class CLIAcpInvocation:
     cwd: str
     env: Mapping[str, str]
     timeout_seconds: float
+    session_model: str | None = None
 
 
 def build_acp_invocation(
@@ -41,13 +42,19 @@ def build_acp_invocation(
     cwd: str,
     env: Mapping[str, str],
     timeout_seconds: float,
+    append_acp_flag: bool = True,
+    session_model: str | None = None,
 ) -> CLIAcpInvocation:
-    command = [*command_prefix, "--acp", *extra_args]
+    command = list(command_prefix)
+    if append_acp_flag:
+        command.append("--acp")
+    command.extend(extra_args)
     return CLIAcpInvocation(
         command=command,
         cwd=cwd,
         env=env,
         timeout_seconds=timeout_seconds,
+        session_model=session_model,
     )
 
 
@@ -71,6 +78,11 @@ async def stream_acp_prompt_invocation(
         session_id, session_payload = await session.start_or_resume_session(
             initialize_result=initialize_result,
             previous_session_id=previous_session_id,
+        )
+        await session.configure_session(
+            session_id=session_id,
+            session_payload=session_payload,
+            model_name=invocation.session_model,
         )
         yield {
             "type": "acp.session_initialized",
@@ -254,6 +266,28 @@ class _AcpClientProcess:
         )
         session_id = _require_non_empty_str(payload.get("sessionId"), "ACP sessionId")
         return session_id, payload
+
+    async def configure_session(
+        self,
+        *,
+        session_id: str,
+        session_payload: Mapping[str, Any],
+        model_name: str | None,
+    ) -> None:
+        if model_name is None:
+            return
+        if not isinstance(session_payload.get("models"), Mapping):
+            raise UserError(
+                "ACP session did not advertise model selection support, but a CLI model_name was "
+                "provided."
+            )
+        await self.request(
+            "session/set_model",
+            {
+                "sessionId": session_id,
+                "modelId": model_name,
+            },
+        )
 
     async def next_notification(self) -> dict[str, Any] | None:
         return await asyncio.wait_for(

@@ -40,7 +40,7 @@ from openai.types.responses.response_reasoning_summary_part_added_event import (
 )
 from openai.types.responses.response_reasoning_summary_part_done_event import Part as DoneEventPart
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ...agent_output import AgentOutputSchemaBase
 from ...exceptions import ModelBehaviorError, UserError
@@ -48,21 +48,9 @@ from ...handoffs import Handoff
 from ...items import ModelResponse, TResponseInputItem, TResponseOutputItem, TResponseStreamEvent
 from ...model_settings import ModelSettings
 from ...models.interface import Model, ModelProvider, ModelTracing
+from ...strict_schema import ensure_strict_json_schema
 from ...tool import FunctionTool, Tool
 from ...usage import Usage
-from ..experimental.codex import (
-    Codex,
-    ItemCompletedEvent,
-    ItemStartedEvent,
-    ItemUpdatedEvent,
-    ThreadErrorEvent,
-    ThreadItem,
-    ThreadOptions,
-    ThreadStartedEvent,
-    TurnCompletedEvent,
-    TurnFailedEvent,
-    TurnOptions,
-)
 from .cli_acp_adapter import (
     CLIAcpInvocation,
     build_acp_invocation,
@@ -72,8 +60,6 @@ from .cli_protocol_adapter import (
     ACPStreamAdapter,
     CopilotStreamAdapter,
     GeminiStreamAdapter,
-    codex_provider_outputs_for_item,
-    stream_codex_item_event,
 )
 from .cli_subprocess_adapter import (
     CLISubprocessInvocation,
@@ -105,11 +91,15 @@ CLIVendor = Literal["codex", "gemini", "copilot"]
 
 
 class _ControlledToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     arguments_json: str = "{}"
 
 
 class _ControlledEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     assistant_message: str | None = None
     tool_calls: list[_ControlledToolCall] = Field(default_factory=list)
     reasoning_summary: str | None = None
@@ -120,6 +110,7 @@ class CLIModelConfig:
     vendor: CLIVendor
     model_name: str | None = None
     executable_path: str | None = None
+    command_prefix: tuple[str, ...] = field(default_factory=tuple)
     execution_mode: CLIExecutionMode = "cli_autonomous"
     transport: CLITransport = "auto"
     cwd: str | None = None
@@ -137,6 +128,7 @@ class CLIProviderConfig:
     timeout_seconds: float = 300.0
     extra_args: tuple[str, ...] = field(default_factory=tuple)
     executable_path: str | None = None
+    command_prefix: tuple[str, ...] = field(default_factory=tuple)
     default_model_name: str | None = None
 
 
@@ -647,65 +639,24 @@ class CLIModel(Model):
         handoffs: list[Handoff],
         previous_response_id: str | None,
     ) -> ModelResponse:
-        _resolve_cli_transport(config)
-        if config.extra_args:
+        transport = _resolve_cli_transport(config)
+        del model_settings, tools, output_schema, handoffs
+        if config.execution_mode != "cli_autonomous":
             raise UserError(
-                "Codex CLI provider does not support cli_extra_args yet. "
-                "Use explicit provider settings such as model_name, cwd, env, or execution_mode."
+                "Codex CLI only supports execution_mode='cli_autonomous'. "
+                "The legacy sdk_controlled thread runtime was removed."
             )
-
-        if config.execution_mode == "cli_autonomous":
-            return await _collect_model_response_from_stream(
-                self._stream_codex_response(
-                    config=config,
-                    system_instructions=system_instructions,
-                    input=input,
-                    previous_response_id=previous_response_id,
-                )
+        if transport != "acp":
+            raise UserError(
+                f"Codex CLI only supports transport='acp'. Received transport={config.transport!r}."
             )
-
-        codex = Codex(
-            codex_path_override=self._resolve_executable(config, "codex"),
-            env=config.env,
-        )
-        thread_options = ThreadOptions(
-            model=config.model_name,
-            working_directory=self._resolve_cwd(config),
-        )
-        thread = (
-            codex.resume_thread(previous_response_id, thread_options)
-            if previous_response_id
-            else codex.start_thread(thread_options)
-        )
-
-        if config.execution_mode == "sdk_controlled":
-            prompt_text = _build_sdk_controlled_prompt(
-                vendor=config.vendor,
+        return await _collect_model_response_from_stream(
+            self._stream_codex_response(
+                config=config,
                 system_instructions=system_instructions,
                 input=input,
-                tools=tools,
-                handoffs=handoffs,
-                output_schema=output_schema,
-                tool_choice=model_settings.tool_choice,
+                previous_response_id=previous_response_id,
             )
-            turn = await thread.run(
-                prompt_text,
-                TurnOptions(
-                    output_schema=_ControlledEnvelope.model_json_schema(),
-                    idle_timeout_seconds=config.timeout_seconds,
-                ),
-            )
-            envelope = _parse_controlled_envelope(turn.final_response)
-            outputs = _controlled_envelope_to_outputs(
-                envelope=envelope,
-                output_schema=output_schema,
-            )
-        return ModelResponse(
-            output=outputs,
-            usage=_codex_usage_to_usage(getattr(turn, "usage", None)),
-            response_id=thread.id,
-            provider_response_id=thread.id,
-            provider_session_id=thread.id,
         )
 
     async def _get_gemini_response(
@@ -866,79 +817,21 @@ class CLIModel(Model):
         input: str | list[TResponseInputItem],
         previous_response_id: str | None,
     ) -> AsyncIterator[TResponseStreamEvent]:
-        if config.extra_args:
-            raise UserError(
-                "Codex CLI provider does not support cli_extra_args yet. "
-                "Use explicit provider settings such as model_name, cwd, env, or execution_mode."
-            )
-
-        codex = Codex(
-            codex_path_override=self._resolve_executable(config, "codex"),
-            env=config.env,
-        )
-        thread_options = ThreadOptions(
-            model=config.model_name,
-            working_directory=self._resolve_cwd(config),
-        )
-        thread = (
-            codex.resume_thread(previous_response_id, thread_options)
-            if previous_response_id
-            else codex.start_thread(thread_options)
-        )
+        transport = _resolve_cli_transport(config)
         prompt_text = _build_autonomous_prompt(system_instructions=system_instructions, input=input)
-        stream_result = await thread.run_streamed(
-            prompt_text,
-            TurnOptions(idle_timeout_seconds=config.timeout_seconds),
-        )
-
-        session = _CLIStreamingSession(
-            response_id=previous_response_id or thread.id or f"resp_{uuid.uuid4().hex}"
-        )
-        start_emitted = False
-        final_response_id = session.response_id
-        final_usage = Usage()
-        cwd = self._resolve_cwd(config)
-
-        async for event in stream_result.events:
-            if isinstance(event, ThreadStartedEvent):
-                final_response_id = event.thread_id
-                session.response_id = event.thread_id
-
-            if not start_emitted:
-                start_emitted = True
-                for stream_event in session.emit_start_events():
-                    yield stream_event
-
-            if isinstance(event, (ItemStartedEvent, ItemUpdatedEvent, ItemCompletedEvent)):
-                for stream_event in stream_codex_item_event(
-                    session=session,
-                    item=event.item,
-                    event=event,
-                    cwd=cwd,
-                ):
-                    yield stream_event
-            elif isinstance(event, TurnCompletedEvent):
-                final_usage = _codex_usage_to_usage(event.usage)
-            elif isinstance(event, TurnFailedEvent):
-                error = event.error.message.strip()
-                raise RuntimeError(f"Codex turn failed{(': ' + error) if error else ''}")
-            elif isinstance(event, ThreadErrorEvent):
-                raise RuntimeError(f"Codex stream error: {event.message}")
-
-        if not start_emitted:
-            for stream_event in session.emit_start_events():
-                yield stream_event
-
-        for state in list(session.reasoning_states.values()):
-            if not state.done and state.text:
-                for stream_event in session.finish_reasoning(state.item_id):
-                    yield stream_event
-        for state in list(session.message_states.values()):
-            if not state.done and state.text:
-                for stream_event in session.finish_message(state.item_id):
-                    yield stream_event
-
-        yield session.complete(response_id=final_response_id, usage=final_usage)
+        if transport != "acp":
+            raise UserError(
+                f"Codex CLI only supports transport='acp'. Received transport={config.transport!r}."
+            )
+        async for event in self._stream_acp_response(
+            vendor="codex",
+            config=config,
+            command_prefix=self._resolve_codex_acp_adapter_command(config),
+            prompt_text=prompt_text,
+            previous_response_id=previous_response_id,
+        ):
+            yield event
+        return
 
     async def _stream_copilot_response(
         self,
@@ -1056,7 +949,7 @@ class CLIModel(Model):
     async def _stream_acp_response(
         self,
         *,
-        vendor: Literal["gemini", "copilot"],
+        vendor: Literal["codex", "gemini", "copilot"],
         config: CLIModelConfig,
         command_prefix: Sequence[str],
         prompt_text: str,
@@ -1075,6 +968,8 @@ class CLIModel(Model):
             cwd=self._resolve_cwd(config),
             env=self._resolve_env(config),
             timeout_seconds=config.timeout_seconds,
+            append_acp_flag=vendor != "codex",
+            session_model=config.model_name if vendor == "codex" else None,
         )
 
         async for payload in _stream_acp_command(
@@ -1115,6 +1010,21 @@ class CLIModel(Model):
             return [gh_path, "copilot", "--"]
         raise UserError("Could not find required CLI executable: copilot or gh")
 
+    def _resolve_codex_acp_adapter_command(self, config: CLIModelConfig) -> list[str]:
+        if config.command_prefix:
+            return list(config.command_prefix)
+        if config.executable_path:
+            return [config.executable_path]
+        executable_path = shutil.which("codex-acp")
+        if executable_path is not None:
+            return [executable_path]
+        npx_path = shutil.which("npx")
+        if npx_path is not None:
+            return [npx_path, "-y", "@zed-industries/codex-acp"]
+        raise UserError(
+            "Could not find a compatible Codex ACP adapter. Install one and rerun."
+        )
+
     def _resolve_env(self, config: CLIModelConfig) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items() if value is not None}
         if config.env:
@@ -1136,6 +1046,7 @@ class CLIProvider(ModelProvider):
         timeout_seconds: float = 300.0,
         extra_args: Sequence[str] | None = None,
         executable_path: str | None = None,
+        command_prefix: Sequence[str] | None = None,
         default_model_name: str | None = None,
     ) -> None:
         self._config = CLIProviderConfig(
@@ -1146,6 +1057,7 @@ class CLIProvider(ModelProvider):
             timeout_seconds=timeout_seconds,
             extra_args=tuple(extra_args or ()),
             executable_path=executable_path,
+            command_prefix=tuple(command_prefix or ()),
             default_model_name=default_model_name,
         )
 
@@ -1168,6 +1080,7 @@ class CLIProvider(ModelProvider):
                 timeout_seconds=self._config.timeout_seconds,
                 extra_args=self._config.extra_args,
                 executable_path=self._config.executable_path,
+                command_prefix=self._config.command_prefix,
             )
         )
 
@@ -1184,6 +1097,7 @@ class _SingleVendorCLIProvider(ModelProvider):
         timeout_seconds: float = 300.0,
         extra_args: Sequence[str] | None = None,
         executable_path: str | None = None,
+        command_prefix: Sequence[str] | None = None,
         default_model_name: str | None = None,
     ) -> None:
         self._vendor = vendor
@@ -1195,6 +1109,7 @@ class _SingleVendorCLIProvider(ModelProvider):
             timeout_seconds=timeout_seconds,
             extra_args=tuple(extra_args or ()),
             executable_path=executable_path,
+            command_prefix=tuple(command_prefix or ()),
             default_model_name=default_model_name,
         )
 
@@ -1211,6 +1126,7 @@ class _SingleVendorCLIProvider(ModelProvider):
                 timeout_seconds=self._config.timeout_seconds,
                 extra_args=self._config.extra_args,
                 executable_path=self._config.executable_path,
+                command_prefix=self._config.command_prefix,
             )
         )
 
@@ -1270,6 +1186,10 @@ def _resolve_cli_model_config(
         overrides.get("executable_path"),
         "CLI executable_path",
     )
+    command_prefix = _coerce_cli_command_prefix(
+        overrides.get("command_prefix"),
+        base_config.command_prefix,
+    )
     cwd = _coerce_optional_str(overrides.get("cwd"), "CLI cwd")
     timeout_seconds = _coerce_timeout_seconds(
         overrides.get("timeout_seconds"),
@@ -1284,6 +1204,7 @@ def _resolve_cli_model_config(
         executable_path=executable_path
         if executable_path is not None
         else base_config.executable_path,
+        command_prefix=command_prefix,
         execution_mode=cast(CLIExecutionMode, execution_mode),
         transport=cast(CLITransport, transport),
         cwd=cwd if cwd is not None else base_config.cwd,
@@ -1306,6 +1227,7 @@ def _extract_cli_overrides(extra_args: Mapping[str, Any]) -> dict[str, Any]:
         "cli_transport": "transport",
         "cli_model_name": "model_name",
         "cli_executable_path": "executable_path",
+        "cli_command_prefix": "command_prefix",
         "cli_cwd": "cwd",
         "cli_env": "env",
         "cli_timeout_seconds": "timeout_seconds",
@@ -1326,6 +1248,31 @@ def _coerce_optional_str(value: Any, name: str) -> str | None:
     if not trimmed:
         raise UserError(f"{name} must not be empty when provided.")
     return trimmed
+
+
+def _coerce_cli_command_prefix(
+    value: Any,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise UserError("CLI command_prefix must be a sequence of strings when provided.")
+    command_prefix: list[str] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, str):
+            raise UserError(
+                f"CLI command_prefix entries must be strings. Invalid entry at index {index}."
+            )
+        trimmed = entry.strip()
+        if not trimmed:
+            raise UserError(
+                f"CLI command_prefix entries must not be empty. Invalid entry at index {index}."
+            )
+        command_prefix.append(trimmed)
+    if not command_prefix:
+        raise UserError("CLI command_prefix must not be empty when provided.")
+    return tuple(command_prefix)
 
 
 def _coerce_timeout_seconds(value: Any, default: float) -> float:
@@ -1461,7 +1408,7 @@ def _build_sdk_controlled_prompt(
             "## Available Actions",
             json.dumps(available_actions, ensure_ascii=False, indent=2),
             "## Required JSON Output Shape",
-            json.dumps(_ControlledEnvelope.model_json_schema(), ensure_ascii=False, indent=2),
+            json.dumps(_controlled_envelope_json_schema(), ensure_ascii=False, indent=2),
         ]
     )
     if tool_choice == "required":
@@ -1528,6 +1475,10 @@ def _parse_controlled_envelope(text: str) -> _ControlledEnvelope:
     if extra_text and not envelope.assistant_message:
         return envelope.model_copy(update={"assistant_message": extra_text})
     return envelope
+
+
+def _controlled_envelope_json_schema() -> dict[str, Any]:
+    return ensure_strict_json_schema(_ControlledEnvelope.model_json_schema())
 
 
 def _controlled_envelope_to_outputs(
@@ -1619,47 +1570,6 @@ def _basic_autonomous_outputs(
         outputs.append(_make_reasoning_item(reasoning_summary))
     outputs.append(_make_message_output(message_text))
     return outputs
-
-
-def _codex_turn_to_outputs(
-    thread_items: list[Any],
-    final_response: str,
-    *,
-    cwd: str,
-) -> list[TResponseOutputItem]:
-    outputs: list[TResponseOutputItem] = []
-    saw_message = False
-    for item in thread_items:
-        item_type = getattr(item, "type", None)
-        if item_type == "reasoning":
-            reasoning_text = getattr(item, "text", "")
-            if reasoning_text:
-                outputs.append(_make_reasoning_item(reasoning_text))
-        elif item_type == "agent_message":
-            message_text = getattr(item, "text", "")
-            if message_text:
-                outputs.append(_make_message_output(message_text))
-                saw_message = True
-        else:
-            outputs.extend(codex_provider_outputs_for_item(cast(ThreadItem, item), cwd=cwd))
-    if final_response and not saw_message:
-        outputs.append(_make_message_output(final_response))
-    return outputs
-
-
-def _codex_usage_to_usage(raw_usage: Any) -> Usage:
-    if raw_usage is None:
-        return Usage()
-    return Usage(
-        requests=1,
-        input_tokens=getattr(raw_usage, "input_tokens", 0),
-        output_tokens=getattr(raw_usage, "output_tokens", 0),
-        total_tokens=getattr(raw_usage, "input_tokens", 0) + getattr(raw_usage, "output_tokens", 0),
-        input_tokens_details=InputTokensDetails(
-            cached_tokens=getattr(raw_usage, "cached_input_tokens", 0)
-        ),
-        output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
-    )
 
 
 def _gemini_usage_to_usage(payload: Mapping[str, Any]) -> Usage:
@@ -1839,9 +1749,18 @@ async def _run_jsonl_command(
 
 def _resolve_cli_transport(config: CLIModelConfig) -> str:
     if config.vendor == "codex":
-        if config.transport != "auto":
-            raise UserError("Codex CLI only supports transport='auto'.")
-        return "thread"
+        if config.execution_mode != "cli_autonomous":
+            raise UserError(
+                "codex CLI only supports execution_mode='cli_autonomous'. "
+                "The legacy sdk_controlled thread runtime was removed."
+            )
+        allowed = {"auto", "acp"}
+        if config.transport not in allowed:
+            raise UserError(
+                f"codex CLI does not support transport={config.transport!r} "
+                f"for execution_mode={config.execution_mode!r}."
+            )
+        return "acp"
 
     if config.vendor == "gemini":
         if config.execution_mode == "sdk_controlled":

@@ -772,64 +772,10 @@ asyncio.run(main())
 
 ## 实验性：Codex 工具
 
-`codex_tool` 封装了 Codex CLI，使智能体能够在工具调用期间运行工作区范围任务（shell、文件编辑、MCP 工具）。该能力面为实验性，可能变更。
+这个 fork 已删除旧的 `codex_tool` 和内建 Codex thread runtime。
 
-当你希望主智能体在不离开当前运行的前提下，将受限工作区任务委派给 Codex 时可使用它。默认工具名为 `codex`。若设置自定义名称，必须为 `codex` 或以 `codex_` 开头。当智能体包含多个 Codex 工具时，每个名称必须唯一。
+现在应通过 CLI model provider 使用 Codex：
 
-```python
-from agents import Agent
-from agents.extensions.experimental.codex import ThreadOptions, TurnOptions, codex_tool
-
-agent = Agent(
-    name="Codex Agent",
-    instructions="Use the codex tool to inspect the workspace and answer the question.",
-    tools=[
-        codex_tool(
-            sandbox_mode="workspace-write",
-            working_directory="/path/to/repo",
-            default_thread_options=ThreadOptions(
-                model="gpt-5.4",
-                model_reasoning_effort="low",
-                network_access_enabled=True,
-                web_search_mode="disabled",
-                approval_policy="never",
-            ),
-            default_turn_options=TurnOptions(
-                idle_timeout_seconds=60,
-            ),
-            persist_session=True,
-        )
-    ],
-)
-```
-
-从这些选项组开始：
-
--   执行能力面：`sandbox_mode` 和 `working_directory` 定义 Codex 可操作范围。请配对使用；当工作目录不在 Git 仓库内时，设置 `skip_git_repo_check=True`。
--   线程默认值：`default_thread_options=ThreadOptions(...)` 配置模型、推理力度、审批策略、附加目录、网络访问和网络检索模式。优先使用 `web_search_mode`，而不是旧版 `web_search_enabled`。
--   轮次默认值：`default_turn_options=TurnOptions(...)` 配置每轮行为，如 `idle_timeout_seconds` 和可选取消 `signal`。
--   工具 I/O：工具调用必须至少包含一个 `inputs` 条目，格式为 `{ "type": "text", "text": ... }` 或 `{ "type": "local_image", "path": ... }`。`output_schema` 可用于要求结构化 Codex 响应。
-
-线程复用与持久化是分离控制项：
-
--   `persist_session=True` 会在对同一工具实例重复调用时复用一个 Codex 线程。
--   `use_run_context_thread_id=True` 会在共享同一可变上下文对象的跨运行中，在运行上下文中存储并复用线程 ID。
--   线程 ID 优先级为：每次调用的 `thread_id`，然后运行上下文线程 ID（若启用），再然后是已配置的 `thread_id` 选项。
--   默认运行上下文键为：当 `name="codex"` 时为 `codex_thread_id`，当 `name="codex_<suffix>"` 时为 `codex_thread_id_<suffix>`。可用 `run_context_thread_id_key` 覆盖。
-
-运行时配置：
-
--   鉴权：设置 `CODEX_API_KEY`（推荐）或 `OPENAI_API_KEY`，或传入 `codex_options={"api_key": "..."}`。
--   运行时：`codex_options.base_url` 覆盖 CLI base URL。
--   二进制解析：设置 `codex_options.codex_path_override`（或 `CODEX_PATH`）以固定 CLI 路径。否则 SDK 会先从 `PATH` 解析 `codex`，再回退到内置 vendor 二进制。
--   环境：`codex_options.env` 完整控制子进程环境。提供后，子进程不会继承 `os.environ`。
--   流限制：`codex_options.codex_subprocess_stream_limit_bytes`（或 `OPENAI_AGENTS_CODEX_SUBPROCESS_STREAM_LIMIT_BYTES`）控制 stdout/stderr 读取器限制。有效范围为 `65536` 到 `67108864`；默认值为 `8388608`。
--   流式传输：`on_stream` 接收线程/轮次生命周期事件和条目事件（`reasoning`、`command_execution`、`mcp_tool_call`、`file_change`、`web_search`、`todo_list` 和 `error` 条目更新）。
--   输出：结果包含 `response`、`usage` 和 `thread_id`；usage 会添加到 `RunContextWrapper.usage`。
-
-参考：
-
--   [Codex 工具 API 参考](ref/extensions/experimental/codex/codex_tool.md)
--   [ThreadOptions 参考](ref/extensions/experimental/codex/thread_options.md)
--   [TurnOptions 参考](ref/extensions/experimental/codex/turn_options.md)
--   完整可运行代码示例参见 `examples/tools/codex.py` 和 `examples/tools/codex_same_thread.py`。
+-   `model="cli/codex"`
+-   `execution_mode="cli_autonomous"`
+-   `transport="acp"`

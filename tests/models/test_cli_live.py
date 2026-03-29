@@ -25,6 +25,8 @@ pytestmark = [
 
 
 def _vendor_available(vendor: str) -> bool:
+    if vendor == "codex" or vendor == "codex-acp":
+        return shutil.which("codex-acp") is not None or shutil.which("npx") is not None
     if vendor == "copilot":
         return shutil.which("copilot") is not None or shutil.which("gh") is not None
     return shutil.which(vendor) is not None
@@ -74,13 +76,15 @@ async def test_cli_model_live_get_response(vendor: str, model_name: str | None) 
 @pytest.mark.parametrize(
     ("vendor", "model_name"),
     [
+        ("codex", None),
         ("gemini", "gemini-2.5-flash"),
         ("copilot", None),
     ],
 )
 async def test_cli_model_live_get_response_via_acp(vendor: str, model_name: str | None) -> None:
-    if not _vendor_available(vendor):
-        pytest.skip(f"{vendor} CLI is not installed in PATH.")
+    required_cli = "codex-acp" if vendor == "codex" else vendor
+    if not _vendor_available(required_cli):
+        pytest.skip(f"{required_cli} CLI is not installed in PATH.")
 
     cli_timeout_seconds = 10 if vendor == "gemini" else 30
     overall_timeout_seconds = 15 if vendor == "gemini" else 45

@@ -10,6 +10,7 @@ from agents.extensions.models.cli_acp_adapter import (
     _AcpClientProcess,
     _build_permission_outcome,
     build_acp_invocation,
+    stream_acp_prompt_invocation,
 )
 
 
@@ -32,6 +33,21 @@ def test_build_acp_invocation_adds_acp_flag() -> None:
     assert invocation.cwd == "/tmp/workspace"
     assert invocation.env == {"PATH": "/bin"}
     assert invocation.timeout_seconds == 30
+
+
+def test_build_acp_invocation_supports_direct_agent_launch() -> None:
+    invocation = build_acp_invocation(
+        command_prefix=["codex-acp"],
+        extra_args=["-c", 'model="gpt-5.4"'],
+        cwd="/tmp/workspace",
+        env={"PATH": "/bin"},
+        timeout_seconds=30,
+        append_acp_flag=False,
+        session_model="gpt-5.4/high",
+    )
+
+    assert invocation.command == ["codex-acp", "-c", 'model="gpt-5.4"']
+    assert invocation.session_model == "gpt-5.4/high"
 
 
 def test_build_permission_outcome_prefers_allow_option() -> None:
@@ -84,3 +100,87 @@ async def test_acp_client_close_does_not_hang_when_process_wait_stalls(monkeypat
     await asyncio.wait_for(session.close(), timeout=0.2)
 
     assert fake_process.kill_called is True
+
+
+@pytest.mark.asyncio
+async def test_stream_acp_prompt_invocation_sets_session_model_when_requested(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+
+    class FakeSession:
+        def __init__(self, invocation: CLIAcpInvocation) -> None:
+            self.invocation = invocation
+
+        async def start(self) -> None:
+            return None
+
+        async def request(self, method: str, params: dict[str, object]) -> dict[str, object]:
+            if method == "initialize":
+                return {"protocolVersion": 1}
+            if method == "session/prompt":
+                return {"stopReason": "end_turn"}
+            raise AssertionError(f"Unexpected request method: {method}")
+
+        async def start_or_resume_session(
+            self,
+            *,
+            initialize_result,
+            previous_session_id,
+        ) -> tuple[str, dict[str, object]]:
+            del initialize_result, previous_session_id
+            return "session-1", {"sessionId": "session-1", "models": {"currentModelId": "gpt-5.4"}}
+
+        async def configure_session(
+            self,
+            *,
+            session_id: str,
+            session_payload: dict[str, object],
+            model_name: str | None,
+        ) -> None:
+            events.append(
+                {
+                    "session_id": session_id,
+                    "session_payload": session_payload,
+                    "model_name": model_name,
+                }
+            )
+
+        async def next_notification(self) -> dict[str, object] | None:
+            await asyncio.sleep(999)
+            return None
+
+        def get_queued_notification(self) -> dict[str, object] | None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(adapter_module, "_AcpClientProcess", FakeSession)
+
+    invocation = build_acp_invocation(
+        command_prefix=["codex-acp"],
+        extra_args=[],
+        cwd="/tmp/workspace",
+        env={"PATH": "/bin"},
+        timeout_seconds=30,
+        append_acp_flag=False,
+        session_model="gpt-5.4/high",
+    )
+
+    payloads = [
+        payload
+        async for payload in stream_acp_prompt_invocation(
+            invocation,
+            prompt="Reply with OK only.",
+            previous_session_id=None,
+        )
+    ]
+
+    assert payloads[0]["type"] == "acp.session_initialized"
+    assert payloads[-1]["type"] == "acp.prompt_result"
+    assert events == [
+        {
+            "session_id": "session-1",
+            "session_payload": {"sessionId": "session-1", "models": {"currentModelId": "gpt-5.4"}},
+            "model_name": "gpt-5.4/high",
+        }
+    ]

@@ -85,7 +85,7 @@ Check out a variety of sample implementations of the SDK in the examples section
     Simple deep research clone that demonstrates complex multi-agent research workflows.
 
 -   **[tools](https://github.com/openai/openai-agents-python/tree/main/examples/tools):**
-    Learn how to implement OAI hosted tools and experimental Codex tooling such as:
+    Learn how to implement OAI hosted and local-runtime tools such as:
 
     -   Web search and web search with filters
     -   File search
@@ -96,8 +96,6 @@ Check out a variety of sample implementations of the SDK in the examples section
     -   Tool search with namespaces and deferred tools (`examples/tools/tool_search.py`)
     -   Computer use
     -   Image generation
-    -   Experimental Codex tool workflows (`examples/tools/codex.py`)
-    -   Experimental Codex same-thread workflows (`examples/tools/codex_same_thread.py`)
 
 -   **[voice](https://github.com/openai/openai-agents-python/tree/main/examples/voice):**
     See examples of voice agents, using our TTS and STT models, including streamed voice examples.

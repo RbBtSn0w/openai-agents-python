@@ -89,7 +89,7 @@ search:
     복잡한 멀티 에이전트 리서치 워크플로를 보여주는 간단한 딥 리서치 클론입니다
 
 -   **[tools](https://github.com/openai/openai-agents-python/tree/main/examples/tools):**
-    다음과 같은 OpenAI 호스트하는 도구 및 실험적 Codex 도구 기능을 구현하는 방법을 알아보세요
+    다음과 같은 OpenAI 호스팅 도구 및 로컬 런타임 도구 기능을 구현하는 방법을 알아보세요
 
     -   웹 검색 및 필터가 있는 웹 검색
     -   파일 검색
@@ -100,8 +100,6 @@ search:
     -   네임스페이스와 지연 도구를 사용하는 도구 검색 (`examples/tools/tool_search.py`)
     -   컴퓨터 사용
     -   이미지 생성
-    -   실험적 Codex 도구 워크플로 (`examples/tools/codex.py`)
-    -   실험적 Codex 동일 스레드 워크플로 (`examples/tools/codex_same_thread.py`)
 
 -   **[voice](https://github.com/openai/openai-agents-python/tree/main/examples/voice):**
     스트리밍 음성 예제를 포함해 TTS 및 STT 모델을 사용하는 음성 에이전트 예제를 확인하세요

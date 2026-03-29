@@ -251,10 +251,11 @@ The current bridges normalize the most stable public event surfaces first: `code
 include richer native transcript items today, while `gemini` currently normalizes `stream-json`
 assistant messages, tool activity, and usage.
 
-`acp` is currently supported for `gemini` and `copilot` in `cli_autonomous` mode. The SDK keeps
-the existing vendor defaults under `auto`, so enabling ACP is an explicit transport choice rather
-than a silent behavior change. In practice, `copilot --acp` is the most reliable live bridge today;
-some `gemini --acp` environments may never answer the initial handshake. When that happens, the SDK
+`acp` is currently supported for `codex`, `gemini`, and `copilot` in `cli_autonomous` mode.
+`codex` is ACP-only: `auto` resolves to the same direct ACP adapter path, and the legacy Codex
+thread runtime was removed. `codex` uses an auto-discovered direct ACP adapter, not
+`codex --acp`. In practice, `copilot --acp` is the most reliable live bridge today; some
+`gemini --acp` environments may never answer the initial handshake. When that happens, the SDK
 raises a timeout instead of silently falling back, and `stream_json` remains the safer Gemini
 transport.
 

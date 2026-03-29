@@ -28,6 +28,7 @@ For local CLI runtimes, make sure the target CLI is already installed and authen
 
 ```bash
 uv run examples/model_providers/cli_provider.py --model codex
+uv run examples/model_providers/cli_provider.py --model codex:gpt-5.4/high --transport acp
 uv run examples/model_providers/cli_provider.py --model gemini:gemini-2.5-pro --execution-mode sdk_controlled
 uv run examples/model_providers/cli_provider.py --model copilot:gpt-4.1
 uv run examples/model_providers/cli_provider.py --model gemini:gemini-2.5-flash --transport acp

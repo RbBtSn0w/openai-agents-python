@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from openai.types.responses import (
@@ -17,21 +16,6 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 
 import agents.extensions.models.cli_model as cli_model_module
 from agents import CLIProvider, UserError
-from agents.extensions.experimental.codex import (
-    AgentMessageItem,
-    CommandExecutionItem,
-    FileChangeItem,
-    FileUpdateChange,
-    ItemCompletedEvent,
-    ItemUpdatedEvent,
-    McpToolCallItem,
-    McpToolCallResult,
-    ReasoningItem as CodexReasoningItem,
-    ThreadStartedEvent,
-    TurnCompletedEvent,
-    Usage as CodexUsage,
-    WebSearchItem,
-)
 from agents.extensions.models import CLIModel
 from agents.extensions.models.cli_model import (
     CLIModelConfig,
@@ -345,23 +329,26 @@ def test_cli_provider_accepts_transport_configuration() -> None:
     assert model.config.transport == "acp"
 
 
-@pytest.mark.asyncio
-async def test_codex_cli_model_rejects_cli_extra_args() -> None:
-    model = CLIModel(CLIModelConfig(vendor="codex"))
+def test_cli_provider_accepts_command_prefix_configuration() -> None:
+    provider = CLIProvider(
+        default_model_name="codex:gpt-5.4/high",
+        transport="acp",
+        command_prefix=["npx", "-y", "@zed-industries/codex-acp"],
+    )
+    model = provider.get_model(None)
+    assert isinstance(model, CLIModel)
+    assert model.config.vendor == "codex"
+    assert model.config.command_prefix == ("npx", "-y", "@zed-industries/codex-acp")
 
-    with pytest.raises(UserError, match="cli_extra_args"):
-        await model.get_response(
-            system_instructions=None,
-            input="Test input",
-            model_settings=ModelSettings(extra_args={"cli_extra_args": ["--foo"]}),
-            tools=[],
-            output_schema=None,
-            handoffs=[],
-            tracing=ModelTracing.DISABLED,
-            previous_response_id=None,
-            conversation_id=None,
-            prompt=None,
-        )
+
+def test_controlled_envelope_schema_is_strict() -> None:
+    schema = cli_model_module._controlled_envelope_json_schema()
+
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    tool_call_schema = schema["$defs"]["_ControlledToolCall"]
+    assert tool_call_schema["type"] == "object"
+    assert tool_call_schema["additionalProperties"] is False
 
 
 @pytest.mark.asyncio
@@ -396,12 +383,28 @@ async def test_cli_model_rejects_invalid_runtime_overrides() -> None:
             prompt=None,
         )
 
+    with pytest.raises(UserError, match="command_prefix"):
+        await model.get_response(
+            system_instructions=None,
+            input="Test input",
+            model_settings=ModelSettings(extra_args={"cli_command_prefix": []}),
+            tools=[],
+            output_schema=None,
+            handoffs=[],
+            tracing=ModelTracing.DISABLED,
+            previous_response_id=None,
+            conversation_id=None,
+            prompt=None,
+        )
+
 
 @pytest.mark.asyncio
-async def test_codex_cli_model_rejects_non_auto_transport() -> None:
-    model = CLIModel(CLIModelConfig(vendor="codex", transport="json"))
+async def test_codex_cli_model_rejects_sdk_controlled_mode() -> None:
+    model = CLIModel(
+        CLIModelConfig(vendor="codex", transport="acp", execution_mode="sdk_controlled")
+    )
 
-    with pytest.raises(UserError, match="transport='auto'"):
+    with pytest.raises(UserError, match="sdk_controlled thread runtime was removed"):
         await model.get_response(
             system_instructions=None,
             input="Test input",
@@ -414,6 +417,143 @@ async def test_codex_cli_model_rejects_non_auto_transport() -> None:
             conversation_id=None,
             prompt=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_codex_cli_model_streams_native_acp(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_stream_acp_command(
+        *,
+        command,
+        cwd,
+        env,
+        timeout_seconds,
+        prompt,
+        previous_response_id,
+    ):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["prompt"] = prompt
+        captured["previous_response_id"] = previous_response_id
+        payloads = [
+            {
+                "type": "acp.session_initialized",
+                "session_id": "codex-acp-session-1",
+                "initialize": {"protocolVersion": 1},
+                "session": {"sessionId": "codex-acp-session-1"},
+            },
+            {
+                "type": "acp.session_update",
+                "session_id": "codex-acp-session-1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tool-acp-codex-1",
+                    "title": "run tests",
+                    "kind": "exec",
+                    "status": "pending",
+                    "rawInput": {"command": "pytest"},
+                },
+            },
+            {
+                "type": "acp.session_update",
+                "session_id": "codex-acp-session-1",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tool-acp-codex-1",
+                    "status": "completed",
+                    "rawOutput": {"exitCode": 0},
+                },
+            },
+            {
+                "type": "acp.session_update",
+                "session_id": "codex-acp-session-1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Codex ACP OK"},
+                },
+            },
+            {
+                "type": "acp.prompt_result",
+                "session_id": "codex-acp-session-1",
+                "result": {"stopReason": "end_turn"},
+            },
+        ]
+        for payload in payloads:
+            yield payload
+
+    monkeypatch.setattr(cli_model_module, "_stream_acp_command", fake_stream_acp_command)
+    monkeypatch.setattr(
+        CLIModel,
+        "_resolve_codex_acp_adapter_command",
+        lambda self, config: ["codex-acp"],
+    )
+
+    model = CLIModel(CLIModelConfig(vendor="codex", model_name="gpt-5.4/high"))
+    events = await _get_stream_events(model)
+
+    completed = events[-1]
+    assert isinstance(completed, ResponseCompletedEvent)
+    assert completed.response.id == "codex-acp-session-1"
+    assert completed.response.output[0].type == "mcp_call"
+    assert completed.response.output[0].name == "run tests"
+    assert completed.response.output[1].content[0].text == "Codex ACP OK"
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command == ["codex-acp"]
+    assert captured["previous_response_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_codex_cli_model_get_response_uses_acp_stream_for_auto_transport(monkeypatch) -> None:
+    async def fake_stream_acp_command(
+        *,
+        command,
+        cwd,
+        env,
+        timeout_seconds,
+        prompt,
+        previous_response_id,
+    ):
+        del command, cwd, env, timeout_seconds, prompt, previous_response_id
+        for payload in [
+            {
+                "type": "acp.session_initialized",
+                "session_id": "codex-acp-session-2",
+                "initialize": {"protocolVersion": 1},
+                "session": {"sessionId": "codex-acp-session-2"},
+            },
+            {
+                "type": "acp.session_update",
+                "session_id": "codex-acp-session-2",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Codex ACP OK"},
+                },
+            },
+            {
+                "type": "acp.prompt_result",
+                "session_id": "codex-acp-session-2",
+                "result": {"stopReason": "end_turn"},
+            },
+        ]:
+            yield payload
+
+    monkeypatch.setattr(cli_model_module, "_stream_acp_command", fake_stream_acp_command)
+    monkeypatch.setattr(
+        CLIModel,
+        "_resolve_codex_acp_adapter_command",
+        lambda self, config: ["codex-acp"],
+    )
+
+    response = await _get_response(CLIModel(CLIModelConfig(vendor="codex")))
+
+    assert response.response_id == "codex-acp-session-2"
+    assert isinstance(response.output[0], ResponseOutputMessage)
+    assert response.output[0].content[0].text == "Codex ACP OK"
 
 
 @pytest.mark.asyncio
@@ -807,209 +947,6 @@ async def test_copilot_cli_model_streams_native_acp(monkeypatch) -> None:
     command = captured["command"]
     assert isinstance(command, list)
     assert command == ["copilot", "--model", "gpt-4.1", "--acp"]
-
-
-@pytest.mark.asyncio
-async def test_codex_cli_model_streams_native_thread_events(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeThread:
-        def __init__(self) -> None:
-            self.id: str | None = None
-
-        async def run_streamed(self, input, turn_options=None):
-            captured["input"] = input
-            captured["turn_options"] = turn_options
-
-            async def event_stream():
-                yield ThreadStartedEvent(thread_id="thread-stream-1")
-                yield ItemUpdatedEvent(item=CodexReasoningItem(id="reason-1", text="Plan"))
-                yield ItemCompletedEvent(item=CodexReasoningItem(id="reason-1", text="Plan"))
-                yield ItemUpdatedEvent(item=AgentMessageItem(id="msg-1", text="OK"))
-                yield ItemCompletedEvent(
-                    item=CommandExecutionItem(
-                        id="cmd-1",
-                        command="pwd",
-                        aggregated_output="/tmp/workspace\n",
-                        exit_code=0,
-                        status="completed",
-                    )
-                )
-                yield ItemCompletedEvent(item=WebSearchItem(id="search-1", query="agents sdk"))
-                yield ItemCompletedEvent(
-                    item=McpToolCallItem(
-                        id="mcp-1",
-                        server="filesystem",
-                        tool="read_file",
-                        arguments={"path": "README.md"},
-                        status="completed",
-                        result=McpToolCallResult(content=[], structured_content={"ok": True}),
-                    )
-                )
-                yield ItemCompletedEvent(
-                    item=FileChangeItem(
-                        id="patch-1",
-                        changes=[FileUpdateChange(path="README.md", kind="update")],
-                        status="completed",
-                    )
-                )
-                yield ItemCompletedEvent(item=AgentMessageItem(id="msg-1", text="OK done"))
-                yield TurnCompletedEvent(
-                    usage=CodexUsage(
-                        input_tokens=2,
-                        cached_input_tokens=1,
-                        output_tokens=3,
-                    )
-                )
-
-            return SimpleNamespace(events=event_stream())
-
-    class FakeCodex:
-        def __init__(self, codex_path_override=None, env=None) -> None:
-            captured["codex_path_override"] = codex_path_override
-            captured["env"] = env
-
-        def start_thread(self, options) -> FakeThread:
-            captured["thread_options"] = options
-            return FakeThread()
-
-        def resume_thread(self, thread_id, options) -> FakeThread:
-            captured["resumed_thread_id"] = thread_id
-            captured["thread_options"] = options
-            return FakeThread()
-
-    monkeypatch.setattr(cli_model_module, "Codex", FakeCodex)
-    monkeypatch.setattr(CLIModel, "_resolve_executable", lambda self, config, name: f"/bin/{name}")
-
-    model = CLIModel(CLIModelConfig(vendor="codex"))
-    events = await _get_stream_events(model)
-
-    assert events[0].type == "response.created"
-    assert events[1].type == "response.in_progress"
-    assert any(
-        isinstance(event, ResponseReasoningSummaryTextDeltaEvent) and event.delta == "Plan"
-        for event in events
-    )
-    text_deltas = [event.delta for event in events if isinstance(event, ResponseTextDeltaEvent)]
-    assert text_deltas == ["OK", " done"]
-
-    completed = events[-1]
-    assert isinstance(completed, ResponseCompletedEvent)
-    assert completed.response.id == "thread-stream-1"
-    assert completed.response.usage.input_tokens == 2
-    assert completed.response.usage.output_tokens == 3
-    assert completed.response.output[0].summary[0].text == "Plan"
-    assert completed.response.output[1].content[0].text == "OK done"
-    assert any(item.type == "local_shell_call" for item in completed.response.output)
-    assert any(item.type == "shell_call_output" for item in completed.response.output)
-    assert any(item.type == "web_search_call" for item in completed.response.output)
-    assert any(item.type == "mcp_call" for item in completed.response.output)
-    assert any(item.type == "apply_patch_call" for item in completed.response.output)
-    assert any(item.type == "apply_patch_call_output" for item in completed.response.output)
-
-    turn_options = captured["turn_options"]
-    assert turn_options.idle_timeout_seconds == 300.0
-
-
-@pytest.mark.asyncio
-async def test_codex_cli_model_get_response_uses_native_stream_transcript(monkeypatch) -> None:
-    class FakeThread:
-        def __init__(self) -> None:
-            self.id: str | None = None
-
-        async def run_streamed(self, input, turn_options=None):
-            del input, turn_options
-
-            async def event_stream():
-                yield ThreadStartedEvent(thread_id="thread-get-1")
-                yield ItemCompletedEvent(item=AgentMessageItem(id="msg-1", text="OK"))
-                yield ItemCompletedEvent(item=WebSearchItem(id="search-1", query="agents sdk"))
-                yield TurnCompletedEvent(
-                    usage=CodexUsage(
-                        input_tokens=4,
-                        cached_input_tokens=1,
-                        output_tokens=2,
-                    )
-                )
-
-            return SimpleNamespace(events=event_stream())
-
-    class FakeCodex:
-        def __init__(self, codex_path_override=None, env=None) -> None:
-            del codex_path_override, env
-
-        def start_thread(self, options) -> FakeThread:
-            del options
-            return FakeThread()
-
-        def resume_thread(self, thread_id, options) -> FakeThread:
-            del thread_id, options
-            return FakeThread()
-
-    monkeypatch.setattr(cli_model_module, "Codex", FakeCodex)
-    monkeypatch.setattr(CLIModel, "_resolve_executable", lambda self, config, name: f"/bin/{name}")
-
-    model = CLIModel(CLIModelConfig(vendor="codex"))
-    response = await _get_response(model)
-
-    assert response.response_id == "thread-get-1"
-    assert response.usage.input_tokens == 4
-    assert response.usage.output_tokens == 2
-    assert response.output[0].content[0].text == "OK"
-    assert response.output[1].type == "web_search_call"
-
-
-def test_codex_turn_to_outputs_maps_provider_native_items() -> None:
-    outputs = cli_model_module._codex_turn_to_outputs(
-        [
-            FileChangeItem(
-                id="patch-1",
-                changes=[
-                    FileUpdateChange(path="docs/guide.md", kind="add"),
-                    FileUpdateChange(path="docs/old.md", kind="delete"),
-                ],
-                status="completed",
-            ),
-            McpToolCallItem(
-                id="mcp-1",
-                server="filesystem",
-                tool="read_file",
-                arguments={"path": "docs/guide.md"},
-                status="completed",
-                result=McpToolCallResult(content=[], structured_content={"body": "ok"}),
-            ),
-            WebSearchItem(id="search-1", query="openai agents sdk"),
-        ],
-        final_response="",
-        cwd="/tmp/workspace",
-    )
-
-    types = [output["type"] if isinstance(output, dict) else output.type for output in outputs]
-    assert types == [
-        "apply_patch_call",
-        "apply_patch_call_output",
-        "apply_patch_call",
-        "apply_patch_call_output",
-        "mcp_call",
-        "web_search_call",
-    ]
-
-    apply_patch_call = outputs[0]
-    apply_patch_output = outputs[1]
-    mcp_call = outputs[4]
-    web_search_call = outputs[5]
-
-    assert isinstance(apply_patch_call, dict)
-    assert apply_patch_call["operation"]["type"] == "create_file"
-    assert apply_patch_call["operation"]["diff"] == ""
-    assert isinstance(apply_patch_output, dict)
-    assert "diff was not exposed" in apply_patch_output["output"]
-    assert isinstance(mcp_call, dict)
-    assert mcp_call["type"] == "mcp_call"
-    assert mcp_call["arguments"] == '{"path": "docs/guide.md"}'
-    assert mcp_call["output"] == '{"body": "ok"}'
-    assert isinstance(web_search_call, dict)
-    assert web_search_call["action"]["query"] == "openai agents sdk"
 
 
 def test_build_response_obj_sanitizes_provider_managed_output_items() -> None:

@@ -6,7 +6,7 @@ Tools let agents take actions: things like fetching data, running code, calling 
 -   Local/runtime execution tools: `ComputerTool` and `ApplyPatchTool` always run in your environment, while `ShellTool` can run locally or in a hosted container.
 -   Function calling: wrap any Python function as a tool.
 -   Agents as tools: expose an agent as a callable tool without a full handoff.
--   Experimental: Codex tool: run workspace-scoped Codex tasks from a tool call.
+-   Codex ACP runtime: route Codex through the CLI model provider instead of an in-process tool.
 
 ## Choosing a tool type
 
@@ -19,7 +19,7 @@ Use this page as a catalog, then jump to the section that matches the runtime yo
 | Run tools in your own process or environment | [Local runtime tools](#local-runtime-tools) |
 | Wrap Python functions as tools | [Function tools](#function-tools) |
 | Let one agent call another without a handoff | [Agents as tools](#agents-as-tools) |
-| Run workspace-scoped Codex tasks from an agent | [Experimental: Codex tool](#experimental-codex-tool) |
+| Use Codex from the local CLI runtime | [Local CLI runtimes](models/index.md#local-cli-runtimes) |
 
 ## Hosted tools
 
@@ -768,64 +768,12 @@ Disabled tools are completely hidden from the LLM at runtime, making this useful
 
 ## Experimental: Codex tool
 
-The `codex_tool` wraps the Codex CLI so an agent can run workspace-scoped tasks (shell, file edits, MCP tools) during a tool call. This surface is experimental and may change.
+The legacy `codex_tool` and its built-in Codex thread runtime were removed from this fork.
 
-Use it when you want the main agent to delegate a bounded workspace task to Codex without leaving the current run. By default, the tool name is `codex`. If you set a custom name, it must be `codex` or start with `codex_`. When an agent includes multiple Codex tools, each must use a unique name.
+Use the CLI model provider instead:
 
-```python
-from agents import Agent
-from agents.extensions.experimental.codex import ThreadOptions, TurnOptions, codex_tool
+-   `model="cli/codex"`
+-   `execution_mode="cli_autonomous"`
+-   `transport="acp"`
 
-agent = Agent(
-    name="Codex Agent",
-    instructions="Use the codex tool to inspect the workspace and answer the question.",
-    tools=[
-        codex_tool(
-            sandbox_mode="workspace-write",
-            working_directory="/path/to/repo",
-            default_thread_options=ThreadOptions(
-                model="gpt-5.4",
-                model_reasoning_effort="low",
-                network_access_enabled=True,
-                web_search_mode="disabled",
-                approval_policy="never",
-            ),
-            default_turn_options=TurnOptions(
-                idle_timeout_seconds=60,
-            ),
-            persist_session=True,
-        )
-    ],
-)
-```
-
-Start with these option groups:
-
--   Execution surface: `sandbox_mode` and `working_directory` define where Codex can operate. Pair them together, and set `skip_git_repo_check=True` when the working directory is not inside a Git repository.
--   Thread defaults: `default_thread_options=ThreadOptions(...)` configures the model, reasoning effort, approval policy, additional directories, network access, and web search mode. Prefer `web_search_mode` over the legacy `web_search_enabled`.
--   Turn defaults: `default_turn_options=TurnOptions(...)` configures per-turn behavior such as `idle_timeout_seconds` and the optional cancellation `signal`.
--   Tool I/O: tool calls must include at least one `inputs` item with `{ "type": "text", "text": ... }` or `{ "type": "local_image", "path": ... }`. `output_schema` lets you require structured Codex responses.
-
-Thread reuse and persistence are separate controls:
-
--   `persist_session=True` reuses one Codex thread for repeated calls to the same tool instance.
--   `use_run_context_thread_id=True` stores and reuses the thread ID in run context across runs that share the same mutable context object.
--   Thread ID precedence is: per-call `thread_id`, then run-context thread ID (if enabled), then the configured `thread_id` option.
--   The default run-context key is `codex_thread_id` for `name="codex"` and `codex_thread_id_<suffix>` for `name="codex_<suffix>"`. Override it with `run_context_thread_id_key`.
-
-Runtime configuration:
-
--   Auth: set `CODEX_API_KEY` (preferred) or `OPENAI_API_KEY`, or pass `codex_options={"api_key": "..."}`.
--   Runtime: `codex_options.base_url` overrides the CLI base URL.
--   Binary resolution: set `codex_options.codex_path_override` (or `CODEX_PATH`) to pin the CLI path. Otherwise the SDK resolves `codex` from `PATH`, then falls back to the bundled vendor binary.
--   Environment: `codex_options.env` fully controls the subprocess environment. When it is provided, the subprocess does not inherit `os.environ`.
--   Stream limits: `codex_options.codex_subprocess_stream_limit_bytes` (or `OPENAI_AGENTS_CODEX_SUBPROCESS_STREAM_LIMIT_BYTES`) controls stdout/stderr reader limits. Valid range is `65536` to `67108864`; default is `8388608`.
--   Streaming: `on_stream` receives thread/turn lifecycle events and item events (`reasoning`, `command_execution`, `mcp_tool_call`, `file_change`, `web_search`, `todo_list`, and `error` item updates).
--   Outputs: results include `response`, `usage`, and `thread_id`; usage is added to `RunContextWrapper.usage`.
-
-Reference:
-
--   [Codex tool API reference](ref/extensions/experimental/codex/codex_tool.md)
--   [ThreadOptions reference](ref/extensions/experimental/codex/thread_options.md)
--   [TurnOptions reference](ref/extensions/experimental/codex/turn_options.md)
--   See `examples/tools/codex.py` and `examples/tools/codex_same_thread.py` for complete runnable samples.
+See [Local CLI runtimes](models/index.md#local-cli-runtimes) for the supported Codex ACP setup.

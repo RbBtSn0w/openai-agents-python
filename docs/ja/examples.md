@@ -89,7 +89,7 @@ search:
     複雑なマルチエージェントのディープリサーチワークフローを示す、シンプルなディープリサーチクローンです。
 
 -   **[tools](https://github.com/openai/openai-agents-python/tree/main/examples/tools):**
-    OpenAI がホストするツールと、次のような実験的な Codex ツール機能の実装方法を学べます。
+    OpenAI がホストするツールと、次のようなローカルランタイムツール機能の実装方法を学べます。
 
     -   Web 検索 とフィルター付き Web 検索
     -   ファイル検索
@@ -100,8 +100,6 @@ search:
     -   名前空間と遅延ツールを使ったツール検索 (`examples/tools/tool_search.py`)
     -   コンピュータ操作
     -   画像生成
-    -   実験的な Codex ツールワークフロー (`examples/tools/codex.py`)
-    -   実験的な Codex 同一スレッドワークフロー (`examples/tools/codex_same_thread.py`)
 
 -   **[voice](https://github.com/openai/openai-agents-python/tree/main/examples/voice):**
     ストリーミング音声のコード例を含む、 TTS / STT モデルを使用した音声エージェントのコード例をご覧ください。
